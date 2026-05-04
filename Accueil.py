@@ -437,13 +437,13 @@ def main():
     with tabs[0]:
         st.subheader("Vue d'ensemble du projet")
 
-        # KPIs
+        # KPIs (uniformisés sans delta pour avoir des cartes de même hauteur)
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.metric("👥 Clients", f"{len(df):,}")
         with c2:
-            st.metric("✅ Souscripteurs", f"{df['y_num'].sum():,}",
-                      delta=f"{df['y_num'].mean()*100:.1f}%")
+            st.metric("✅ Souscripteurs",
+                       f"{df['y_num'].sum():,} ({df['y_num'].mean()*100:.1f}%)")
         with c3:
             st.metric("📅 Âge moyen", f"{df['age'].mean():.0f} ans")
         with c4:
@@ -451,7 +451,7 @@ def main():
 
         st.markdown("---")
 
-        col1, col2 = st.columns([2, 1])
+        col1, col2 = st.columns([3, 2])
 
         with col1:
             st.markdown("### 🎯 Contexte du projet")
@@ -478,14 +478,39 @@ def main():
             """)
 
         with col2:
-            # Donut de la cible
-            fig_donut, ax_donut = _fig(5, 5)
+            # Donut compact avec total au centre + légende externe
+            fig_donut, ax_donut = _fig(4.5, 4.5)
             counts = df["y"].value_counts()
-            colors = ["#1F4E79" if x == "no" else "#27AE60" for x in counts.index]
-            ax_donut.pie(counts.values, labels=counts.index, autopct='%1.1f%%',
-                          colors=colors, wedgeprops=dict(width=0.4),
-                          textprops={'fontsize': 11})
-            ax_donut.set_title("Répartition de la cible", fontsize=12, pad=10)
+            counts = counts.reindex(["no", "yes"])  # ordre fixé
+            colors = ["#1F4E79", "#27AE60"]
+            labels_pct = [f"{c/counts.sum()*100:.1f}%" for c in counts.values]
+
+            wedges, texts = ax_donut.pie(
+                counts.values,
+                colors=colors,
+                wedgeprops=dict(width=0.35, edgecolor="white", linewidth=2),
+                startangle=90, counterclock=False,
+            )
+
+            # Total au centre
+            ax_donut.text(0, 0.05, f"{counts.sum():,}",
+                           ha="center", va="center",
+                           fontsize=18, fontweight="bold", color="#1F4E79")
+            ax_donut.text(0, -0.18, "clients",
+                           ha="center", va="center",
+                           fontsize=10, color="#16324f")
+
+            # Légende propre à droite
+            legend_labels = [
+                f"Non-souscripteurs  ·  {labels_pct[0]}",
+                f"Souscripteurs  ·  {labels_pct[1]}",
+            ]
+            ax_donut.legend(wedges, legend_labels,
+                             loc="center left", bbox_to_anchor=(1.0, 0.5),
+                             frameon=False, fontsize=9)
+
+            ax_donut.set_title("Répartition de la cible",
+                                fontsize=12, pad=15, fontweight="bold")
             plt.tight_layout()
             st.pyplot(fig_donut, use_container_width=True)
             plt.close(fig_donut)

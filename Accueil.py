@@ -1,12 +1,13 @@
 """
 ═══════════════════════════════════════════════════════════════════════════
-🏦 DASHBOARD MARKETING BANCAIRE — Application Streamlit
+🚦 DASHBOARD TRAFIC PARISIEN — Application Streamlit
 ═══════════════════════════════════════════════════════════════════════════
-Dashboard ML pour la prédiction de souscription à un dépôt à terme.
-Architecture single-page avec onglets.
+Analyse interactive des données de trafic routier de la Ville de Paris
+(capteurs permanents, 1M+ mesures, 13 mois de données).
 
-Auteur : Djakpa
-Date   : 2026
+Architecture single-page avec onglets, chargement de fichiers pré-agrégés.
+
+Auteur : Cynthia Djakpa
 ═══════════════════════════════════════════════════════════════════════════
 """
 
@@ -15,353 +16,175 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import streamlit as st
-from sklearn.cluster import KMeans
-from sklearn.compose import ColumnTransformer
-from sklearn.decomposition import PCA
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.metrics import (accuracy_score, confusion_matrix, f1_score,
-                             precision_recall_curve, precision_score,
-                             recall_score, roc_auc_score, roc_curve)
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+import folium
+from folium.plugins import HeatMap
+from streamlit_folium import st_folium
 
 # ─── CONSTANTES ───
-DATA_PATH = "bankfull.csv"
-COST = 5          # Coût d'un appel téléphonique (€)
-GAIN = 200        # Gain moyen par souscription (€)
+DATA_AGG_HORAIRE = "agg_par_arc_heure.csv.gz"
+DATA_AGG_TRONCONS = "agg_par_arc.csv.gz"
+DATA_AGG_TEMPOREL = "agg_temporel.csv.gz"
+DATA_SAMPLE_DIAG = "sample_diagramme.csv.gz"
+
+NB_LIGNES_TOTAL = 1_048_575      # connue à l'avance
+NB_TRONCONS = 2985
+PERIODE = "Sept 2023 → Oct 2024 (13 mois)"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# STYLE MATPLOTLIB
+# STYLE MATPLOTLIB — PALETTE PARIS VINTAGE
 # ═══════════════════════════════════════════════════════════════════════════
-sns.set_theme(style="whitegrid", palette="Blues")
+sns.set_theme(style="whitegrid")
 for k, v in {
-    "axes.facecolor": "#ffffff", "figure.facecolor": "#ffffff",
-    "axes.edgecolor": "#d9e6f2", "grid.color": "#dfeaf5",
-    "axes.labelcolor": "#16324f", "xtick.color": "#16324f",
-    "ytick.color": "#16324f", "text.color": "#16324f",
-    "axes.titlecolor": "#1F4E79",
+    "axes.facecolor": "#FAF7F0", "figure.facecolor": "#FAF7F0",
+    "axes.edgecolor": "#D4C5A9", "grid.color": "#E8DDC8",
+    "axes.labelcolor": "#2A5C4D", "xtick.color": "#3A3A3A",
+    "ytick.color": "#3A3A3A", "text.color": "#3A3A3A",
+    "axes.titlecolor": "#2A5C4D",
 }.items():
     plt.rcParams[k] = v
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # CONFIG STREAMLIT
 # ═══════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Marketing Bancaire — Dashboard ML",
-    page_icon="🏦",
+    page_title="Trafic Parisien — Dashboard",
+    page_icon="🚦",
     layout="wide",
 )
 
-# ─── STYLE CSS (identique à votre style préféré) ───
+# ─── STYLE CSS — PALETTE PARIS VINTAGE ───
+# Vert métro #2A5C4D · Doré Tour Eiffel #D4A82A · Beige pierre #E8DDC8
+# Gris foncé #3A3A3A · Rouge accent #B33A3A · Crème #FAF7F0
 st.markdown("""
 <style>
-.main { background: linear-gradient(135deg,#f4f8fc 0%,#fbfdff 50%,#eef5fb 100%); }
+.main { background: linear-gradient(135deg,#FAF7F0 0%,#F5EFE0 50%,#EFE4D0 100%); }
 
 section[data-testid="stSidebar"] {
-    background: linear-gradient(180deg,#eaf2fb 0%,#f4f8fc 100%) !important;
-    border-right: 1px solid #d7e3f1;
+    background: linear-gradient(180deg,#2A5C4D 0%,#1F4438 100%) !important;
+    border-right: 1px solid #1A3A30;
+}
+section[data-testid="stSidebar"] * {
+    color: #F5EFE0 !important;
+}
+section[data-testid="stSidebar"] a {
+    color: #D4A82A !important;
+    text-decoration: underline;
 }
 
-h1,h2,h3 { color:#1F4E79 !important; }
+h1, h2, h3 { color:#2A5C4D !important; font-family: 'Georgia', serif; }
 
 .metric-card {
-    background: linear-gradient(135deg,#ffffff 0%,#f9fcff 100%);
-    border-radius:14px; padding:1rem;
-    border:1px solid #d9e6f2;
-    box-shadow:0 3px 10px rgba(31,78,121,.10);
-    min-height:88px; color:#16324f;
+    background: linear-gradient(135deg,#FFFFFF 0%,#FAF7F0 100%);
+    border-radius: 4px;
+    padding: 1rem;
+    border: 1px solid #D4C5A9;
+    border-left: 4px solid #D4A82A;
+    box-shadow: 0 2px 6px rgba(58,58,58,.10);
+    min-height: 88px;
+    color: #3A3A3A;
 }
 
 div[data-testid="stMetric"] {
-    background-color:#ffffff; border:1px solid #d9e6f2;
-    padding:0.8rem; border-radius:12px;
-    box-shadow:0 2px 8px rgba(31,78,121,.08);
+    background-color: #FFFFFF;
+    border: 1px solid #D4C5A9;
+    border-left: 4px solid #2A5C4D;
+    padding: 0.8rem;
+    border-radius: 4px;
+    box-shadow: 0 2px 6px rgba(58,58,58,.08);
+}
+div[data-testid="stMetric"] label {
+    color: #2A5C4D !important;
+    font-weight: 600;
 }
 
-div[data-baseweb="tab-list"] { gap:8px; }
+div[data-baseweb="tab-list"] { gap: 6px; border-bottom: 2px solid #D4A82A; }
 button[data-baseweb="tab"] {
-    background-color:#edf4fb !important;
-    border-radius:10px 10px 0 0 !important;
-    color:#1F4E79 !important;
-    border:1px solid #d7e3f1 !important;
-    padding:0.5rem 1rem !important;
+    background-color: #F5EFE0 !important;
+    border-radius: 4px 4px 0 0 !important;
+    color: #2A5C4D !important;
+    border: 1px solid #D4C5A9 !important;
+    border-bottom: none !important;
+    padding: 0.6rem 1.2rem !important;
+    font-weight: 500 !important;
+    font-family: 'Georgia', serif !important;
 }
 button[data-baseweb="tab"][aria-selected="true"] {
-    background-color:#1F4E79 !important;
-    color:white !important;
-    border-color:#1F4E79 !important;
+    background-color: #2A5C4D !important;
+    color: #FAF7F0 !important;
+    border-color: #2A5C4D !important;
+    box-shadow: 0 -2px 4px rgba(212,168,42,.3);
 }
 
 .stButton > button {
-    background: linear-gradient(135deg,#1F4E79 0%,#2E7D32 100%);
-    color:white; border:none; border-radius:10px;
-    padding:0.6rem 1.2rem; font-weight:600; width:100%;
+    background: linear-gradient(135deg,#2A5C4D 0%,#1F4438 100%);
+    color: #FAF7F0;
+    border: 1px solid #D4A82A;
+    border-radius: 4px;
+    padding: 0.6rem 1.2rem;
+    font-weight: 600;
+    width: 100%;
+    font-family: 'Georgia', serif;
 }
-.stButton > button:hover { filter:brightness(1.05); }
-.stAlert { border-radius:12px; }
+.stButton > button:hover {
+    background: linear-gradient(135deg,#D4A82A 0%,#B8901E 100%);
+    color: #2A5C4D;
+}
+
+.stAlert { border-radius: 4px; border-left: 4px solid #D4A82A; }
 
 .sb-section {
-    font-size:0.72rem; font-weight:700; color:#1F4E79;
-    text-transform:uppercase; letter-spacing:.09em;
-    margin-top:1rem; margin-bottom:0.25rem;
-    border-bottom:1px solid #c9ddf0; padding-bottom:0.2rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #D4A82A !important;
+    text-transform: uppercase;
+    letter-spacing: .12em;
+    margin-top: 1rem;
+    margin-bottom: 0.25rem;
+    border-bottom: 1px solid #D4A82A;
+    padding-bottom: 0.2rem;
+    font-family: 'Georgia', serif;
 }
 
-.result-box {
-    border-radius:12px; padding:1rem 1.1rem;
-    margin-top:0.6rem; font-size:0.95rem; line-height:1.6;
+/* Titre principal style "Paris" */
+h1:first-of-type {
+    border-bottom: 3px double #D4A82A;
+    padding-bottom: 0.5rem;
 }
-.result-target   { background:#e8f5e9; border:1.5px solid #27ae60; color:#1b5e20; }
-.result-notarget { background:#fdecea; border:1.5px solid #e53935; color:#7f0000; }
 
-.prob-bar-wrap {
-    background:#dce8f5; border-radius:8px;
-    height:16px; overflow:hidden; margin:0.5rem 0 0.2rem;
+/* Style des selectbox / radio (sidebar) */
+section[data-testid="stSidebar"] .stMarkdown p {
+    color: #FAF7F0 !important;
 }
-.prob-bar-fill { height:100%; border-radius:8px; }
-.prob-value { font-size:1.7rem; font-weight:800; margin-top:0.1rem; }
+
+/* Code inline */
+code {
+    background-color: #E8DDC8 !important;
+    color: #B33A3A !important;
+    padding: 2px 6px;
+    border-radius: 3px;
+}
+
+/* Dataframes */
+.dataframe {
+    border: 1px solid #D4C5A9;
+}
 </style>
 """, unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CHARGEMENT & PRÉPARATION
+# CHARGEMENT DES DONNÉES (cache pour performance)
 # ═══════════════════════════════════════════════════════════════════════════
 @st.cache_data
-def load_data(path: str) -> pd.DataFrame:
-    """Charge le dataset bancaire."""
-    return pd.read_csv(path, sep=";")
-
-
-@st.cache_data
-def prepare_features(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """Crée des variables dérivées utiles à l'analyse."""
-    df = df_raw.copy()
-
-    # Tranches d'âge (variable catégorielle dérivée)
-    df["age_group"] = pd.cut(
-        df["age"],
-        bins=[0, 30, 45, 60, 100],
-        labels=["<30", "30-45", "45-60", "60+"]
-    )
-
-    # Tranches de solde
-    df["balance_group"] = pd.cut(
-        df["balance"],
-        bins=[-np.inf, 0, 1000, 5000, np.inf],
-        labels=["Négatif", "Faible", "Moyen", "Élevé"]
-    )
-
-    # Variable cible numérique
-    df["y_num"] = (df["y"] == "yes").astype(int)
-
-    # A-t-il déjà été contacté ?
-    df["contacted_before"] = (df["pdays"] != -1).astype(int)
-
-    return df
-
-
-def get_model_columns() -> tuple[list[str], list[str]]:
-    """Retourne (variables numériques, variables catégorielles) pour le modèle."""
-    return (
-        ["age", "balance", "day", "campaign", "pdays", "previous", "contacted_before"],
-        ["job", "marital", "education", "default", "housing", "loan",
-         "contact", "month", "poutcome"],
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# ENTRAÎNEMENT DES MODÈLES
-# ═══════════════════════════════════════════════════════════════════════════
-@st.cache_resource
-def train_models(df: pd.DataFrame, test_size: float = 0.2,
-                 random_state: int = 42) -> dict:
-    """Entraîne 4 modèles de classification et retourne les résultats."""
-    num_cols, cat_cols = get_model_columns()
-    X = df[num_cols + cat_cols]
-    y = df["y_num"]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, stratify=y
-    )
-
-    # Pipeline de prétraitement
-    pre = ColumnTransformer(transformers=[
-        ("num", Pipeline([("imp", SimpleImputer(strategy="median")),
-                          ("sc", StandardScaler())]), num_cols),
-        ("cat", Pipeline([("imp", SimpleImputer(strategy="most_frequent")),
-                          ("ohe", OneHotEncoder(handle_unknown="ignore"))]), cat_cols),
-    ])
-
-    # 4 modèles à comparer
-    estimators = {
-        "Régression logistique": LogisticRegression(max_iter=2000, class_weight="balanced",
-                                                     random_state=random_state),
-        "KNN (K=5)": KNeighborsClassifier(n_neighbors=5, n_jobs=-1),
-        "Decision Tree": DecisionTreeClassifier(max_depth=5, class_weight="balanced",
-                                                random_state=random_state),
-        "Random Forest": RandomForestClassifier(n_estimators=100, max_depth=10,
-                                                class_weight="balanced",
-                                                random_state=random_state, n_jobs=-1),
-    }
-
-    results = {}
-    for name, est in estimators.items():
-        pipe = Pipeline([("pre", pre), ("clf", est)])
-        pipe.fit(X_train, y_train)
-
-        y_pred = pipe.predict(X_test)
-        y_proba = pipe.predict_proba(X_test)[:, 1]
-
-        results[name] = {
-            "pipeline": pipe,
-            "y_pred": y_pred,
-            "y_proba": y_proba,
-            "accuracy": accuracy_score(y_test, y_pred),
-            "precision": precision_score(y_test, y_pred, zero_division=0),
-            "recall": recall_score(y_test, y_pred),
-            "f1": f1_score(y_test, y_pred),
-            "roc_auc": roc_auc_score(y_test, y_proba),
-            "cm": confusion_matrix(y_test, y_pred),
-            "pr_curve": precision_recall_curve(y_test, y_proba),
-            "roc_curve": roc_curve(y_test, y_proba),
-        }
-
-    # Tableau de comparaison
-    comparison = pd.DataFrame([
-        {"Modèle": k, "Accuracy": v["accuracy"], "Precision": v["precision"],
-         "Recall": v["recall"], "F1": v["f1"], "ROC-AUC": v["roc_auc"]}
-        for k, v in results.items()
-    ]).set_index("Modèle")
-
-    return {
-        "results": results,
-        "comparison": comparison,
-        "X_test": X_test,
-        "y_test": y_test,
-        "best_model": "Random Forest",
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CLUSTERING (SEGMENTATION)
-# ═══════════════════════════════════════════════════════════════════════════
-@st.cache_resource
-def perform_clustering(df: pd.DataFrame, n_clusters: int = 4) -> dict:
-    """Segmentation par K-Means sur les variables numériques."""
-    cluster_features = ["age", "balance", "campaign", "pdays", "previous"]
-    X_clu = df[cluster_features].copy()
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_clu)
-
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    clusters = kmeans.fit_predict(X_scaled)
-
-    # ACP pour visualisation 2D
-    pca = PCA(n_components=2)
-    X_pca = pca.fit_transform(X_scaled)
-
-    seg_df = df.copy()
-    seg_df["Cluster"] = clusters
-    seg_df["PCA1"] = X_pca[:, 0]
-    seg_df["PCA2"] = X_pca[:, 1]
-
-    # Profil moyen par cluster
-    cluster_profile = seg_df.groupby("Cluster").agg(
-        nb_clients=("age", "count"),
-        age_moyen=("age", "mean"),
-        balance_moyen=("balance", "mean"),
-        campaign_moyen=("campaign", "mean"),
-        taux_souscription=("y_num", "mean"),
-    ).reset_index()
-    cluster_profile["taux_souscription"] = cluster_profile["taux_souscription"] * 100
-
-    # Attribuer un nom métier
-    def label_cluster(row):
-        if row["age_moyen"] < 30:
-            return "Jeunes actifs"
-        elif row["age_moyen"] >= 55:
-            return "Seniors / Retraités"
-        elif row["balance_moyen"] > 2000:
-            return "Aisés établis"
-        else:
-            return "Actifs moyens"
-
-    cluster_profile["Segment métier"] = cluster_profile.apply(label_cluster, axis=1)
-
-    return {
-        "seg_df": seg_df,
-        "cluster_profile": cluster_profile,
-        "n_clusters": n_clusters,
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# IMPORTANCE DES VARIABLES
-# ═══════════════════════════════════════════════════════════════════════════
-def feat_importance(pipeline) -> pd.DataFrame:
-    """Récupère l'importance des variables d'un pipeline scikit-learn."""
-    pre = pipeline.named_steps["pre"]
-    clf = pipeline.named_steps["clf"]
-
-    # Récupérer les noms des features après one-hot
-    num_cols, cat_cols = get_model_columns()
-    cat_names = list(pre.named_transformers_["cat"].named_steps["ohe"].get_feature_names_out(cat_cols))
-    feature_names = num_cols + cat_names
-
-    # Importance selon le modèle
-    if hasattr(clf, "feature_importances_"):
-        importances = clf.feature_importances_
-    elif hasattr(clf, "coef_"):
-        importances = np.abs(clf.coef_[0])
-    else:
-        return pd.DataFrame({"Variable": feature_names,
-                             "Importance": [0]*len(feature_names)})
-
-    df_imp = pd.DataFrame({
-        "Variable": feature_names,
-        "Importance": importances
-    }).sort_values("Importance", ascending=False)
-    return df_imp
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# CALCUL D'UNE STRATÉGIE MARKETING (pour Décision)
-# ═══════════════════════════════════════════════════════════════════════════
-def compute_strategy(y_test, y_proba, threshold, cost, gain):
-    """Calcule les indicateurs business pour un seuil donné."""
-    y_pred = (y_proba >= threshold).astype(int)
-
-    nb_contacts = int(y_pred.sum())
-    nb_repondeurs = int(((y_pred == 1) & (y_test == 1)).sum())
-    nb_fp = int(((y_pred == 1) & (y_test == 0)).sum())
-    nb_fn = int(((y_pred == 0) & (y_test == 1)).sum())
-
-    cout_total = nb_contacts * cost
-    gain_total = nb_repondeurs * gain
-    profit = gain_total - cout_total
-    roi = (profit / cout_total * 100) if cout_total > 0 else 0
-    taux_conv = (nb_repondeurs / nb_contacts * 100) if nb_contacts > 0 else 0
-    taux_capture = (nb_repondeurs / y_test.sum() * 100) if y_test.sum() > 0 else 0
-
-    return {
-        "Seuil": threshold,
-        "Clients contactés": nb_contacts,
-        "Répondeurs captés": nb_repondeurs,
-        "Faux positifs": nb_fp,
-        "Faux négatifs": nb_fn,
-        "Taux de conversion (%)": round(taux_conv, 2),
-        "Taux de capture (%)": round(taux_capture, 2),
-        "Coût total (€)": cout_total,
-        "Profit estimé (€)": profit,
-        "ROI (%)": round(roi, 2),
-    }
+def load_data():
+    """Charge les 4 fichiers pré-agrégés."""
+    agg_horaire = pd.read_csv(DATA_AGG_HORAIRE, compression="gzip")
+    agg_troncons = pd.read_csv(DATA_AGG_TRONCONS, compression="gzip")
+    agg_temporel = pd.read_csv(DATA_AGG_TEMPOREL, compression="gzip")
+    sample_diag = pd.read_csv(DATA_SAMPLE_DIAG, compression="gzip")
+    return agg_horaire, agg_troncons, agg_temporel, sample_diag
 
 
 def _fig(w, h):
@@ -374,61 +197,50 @@ def _fig(w, h):
 # ═══════════════════════════════════════════════════════════════════════════
 def main():
     # ─── CHARGEMENT ───
-    df_raw = load_data(DATA_PATH)
-    df = prepare_features(df_raw)
-
-    # ─── ENTRAÎNEMENT ───
-    with st.spinner("⚙️ Entraînement des modèles en cours..."):
-        modeling = train_models(df)
-
-    with st.spinner("⚙️ Segmentation en cours..."):
-        segmentation = perform_clustering(df, n_clusters=4)
-
-    # Modèle de référence pour la décision marketing
-    best_model_name = modeling["best_model"]
-    y_test = modeling["y_test"]
-    y_proba_best = modeling["results"][best_model_name]["y_proba"]
+    with st.spinner("⚙️ Chargement des données..."):
+        agg_horaire, agg_troncons, agg_temporel, sample_diag = load_data()
 
     # ═══════════════════════════════════════════════════════════════════════
     # SIDEBAR
     # ═══════════════════════════════════════════════════════════════════════
     with st.sidebar:
         st.markdown('<p class="sb-section">📊 PROJET</p>', unsafe_allow_html=True)
-        st.markdown("**Marketing Bancaire**")
-        st.caption("Prédiction de souscription à un dépôt à terme")
+        st.markdown("**Trafic routier parisien**")
+        st.caption("Analyse des capteurs permanents de la Ville de Paris")
 
         st.markdown('<p class="sb-section">📁 DONNÉES</p>', unsafe_allow_html=True)
-        st.caption(f"📄 {len(df):,} clients × {df_raw.shape[1]} variables")
-        st.caption(f"✅ Souscripteurs : {df['y_num'].sum():,} ({df['y_num'].mean()*100:.1f}%)")
+        st.caption(f"📄 {NB_LIGNES_TOTAL:,} mesures horaires")
+        st.caption(f"🛣️ {NB_TRONCONS:,} tronçons surveillés")
+        st.caption(f"📅 {PERIODE}")
 
-        st.markdown('<p class="sb-section">🤖 MODÈLE RETENU</p>', unsafe_allow_html=True)
-        st.success(f"🏆 **{best_model_name}**")
-        st.caption(f"ROC-AUC : {modeling['results'][best_model_name]['roc_auc']:.3f}")
-
-        st.markdown('<p class="sb-section">💰 PARAMÈTRES BUSINESS</p>',
+        st.markdown('<p class="sb-section">🛠️ MÉTHODOLOGIE</p>',
                     unsafe_allow_html=True)
-        global COST, GAIN
-        COST = st.number_input("Coût d'un appel (€)", 1.0, 50.0, 5.0, step=0.5)
-        GAIN = st.number_input("Gain par souscription (€)", 50.0, 2000.0,
-                                200.0, step=10.0)
+        st.caption("✅ Lecture par chunks (gestion mémoire)")
+        st.caption("✅ Imputation par interpolation temporelle")
+        st.caption("✅ Pré-agrégation pour performance")
+
+        st.markdown('<p class="sb-section">🌐 SOURCE</p>', unsafe_allow_html=True)
+        st.caption("Direction de la Voirie et des Déplacements — Ville de Paris")
+        st.markdown("[opendata.paris.fr](https://opendata.paris.fr/explore/dataset/comptages-routiers-permanents/)")
 
     # ═══════════════════════════════════════════════════════════════════════
     # EN-TÊTE
     # ═══════════════════════════════════════════════════════════════════════
-    st.title("🏦 Marketing Bancaire — Dashboard ML")
-    st.caption("Analyse, segmentation, prédiction et optimisation des campagnes "
-               "de souscription à un dépôt à terme.")
+    st.title("🚦 Trafic routier parisien — Dashboard d'analyse")
+    st.caption(
+        f"Analyse de **{NB_LIGNES_TOTAL:,} mesures horaires** issues de "
+        f"**{NB_TRONCONS:,} capteurs** sur **{PERIODE}**."
+    )
 
     # ═══════════════════════════════════════════════════════════════════════
     # ONGLETS
     # ═══════════════════════════════════════════════════════════════════════
     tabs = st.tabs([
         "🏠 Vue d'ensemble",
-        "📊 Analyse exploratoire",
-        "🎯 Segmentation",
-        "🤖 Modélisation",
-        "💰 Décision marketing",
-        "🔮 Prédiction",
+        "📊 Exploration",
+        "⏱️ Tendances temporelles",
+        "🗺️ Cartographie",
+        "🚦 Tronçons",
     ])
 
     # ──────────────────────────────────────────────────────────────────────
@@ -437,17 +249,18 @@ def main():
     with tabs[0]:
         st.subheader("Vue d'ensemble du projet")
 
-        # KPIs (uniformisés sans delta pour avoir des cartes de même hauteur)
+        # KPIs
         c1, c2, c3, c4 = st.columns(4)
         with c1:
-            st.metric("👥 Clients", f"{len(df):,}")
+            st.metric("📊 Mesures", f"{NB_LIGNES_TOTAL:,}")
         with c2:
-            st.metric("✅ Souscripteurs",
-                       f"{df['y_num'].sum():,} ({df['y_num'].mean()*100:.1f}%)")
+            st.metric("🛣️ Tronçons", f"{NB_TRONCONS:,}")
         with c3:
-            st.metric("📅 Âge moyen", f"{df['age'].mean():.0f} ans")
+            debit_moyen = agg_troncons["debit_moyen"].mean()
+            st.metric("🚗 Débit moyen", f"{debit_moyen:.0f} véh/h")
         with c4:
-            st.metric("💰 Solde moyen", f"{df['balance'].mean():,.0f} €")
+            occup_moyenne = agg_troncons["occupation_moyenne"].mean()
+            st.metric("⏱️ Occupation moy.", f"{occup_moyenne:.1f} %")
 
         st.markdown("---")
 
@@ -455,509 +268,540 @@ def main():
 
         with col1:
             st.markdown("### 🎯 Contexte du projet")
-            st.markdown("""
-            Une **banque portugaise** mène des campagnes de marketing direct par
-            téléphone pour proposer à ses clients de souscrire à un **dépôt à terme**.
+            st.markdown(f"""
+            En tant que **data analyst pour la Ville de Paris**, ce dashboard
+            analyse les données de trafic routier issues des **boucles
+            électromagnétiques** implantées dans la chaussée du réseau
+            routier parisien.
 
-            **Le problème :** le taux de conversion réel n'est que de **11.7%** —
-            soit **88 appels sur 100 sont infructueux**, ce qui plombe le ROI des
-            campagnes.
+            **Indicateurs principaux :**
+            - 🚗 **Débit horaire** : véhicules par heure
+            - ⏱️ **Taux d'occupation** : % de temps où un véhicule est sur le capteur
+            - 🚦 **État du trafic** : Fluide / Pré-saturé / Saturé / Bloqué
 
-            **L'objectif :** construire un modèle prédictif capable d'identifier
-            *à l'avance* les clients à fort potentiel de souscription.
+            **Volume de données :** **{NB_LIGNES_TOTAL:,} mesures**, soit ~1 Million
+            de lignes, traitées avec une approche **Big Data**
+            (chargement par chunks).
             """)
 
-            st.markdown("### 🔬 Méthodologie CRISP-DM")
+            st.markdown("### 🔬 Pipeline de traitement (CRISP-DM)")
             st.markdown("""
-            1. **Compréhension métier** — analyse des objectifs et du contexte
-            2. **Compréhension des données** — EDA, statistiques descriptives
-            3. **Préparation** — encodage, gestion du déséquilibre, split train/test
-            4. **Modélisation** — 4 algorithmes testés (LR, KNN, DT, RF)
-            5. **Évaluation** — F1-score, ROC-AUC, matrice de confusion
-            6. **Déploiement** — ce dashboard 🚀
+            1. **Chargement** par chunks de 100k lignes (gestion mémoire)
+            2. **Suppression** des colonnes redondantes (15 → 9)
+            3. **Imputation** par interpolation linéaire temporelle
+            4. **Formatage** des dates et création de variables temporelles
+            5. **Statistiques** descriptives par tronçon
+            6. **Séries temporelles** : profils horaires & hebdomadaires
+            7. **Visualisations** : histogrammes, diagramme fondamental
+            8. **Encodage** ordinal (état trafic) + One-Hot (état arc)
+            9. **Cartographie** interactive avec Folium
             """)
 
         with col2:
-            # Donut compact avec total au centre + légende externe
+            # Répartition par état du trafic
+            st.markdown("### 🚦 État dominant des tronçons")
+            etat_counts = agg_troncons["etat_dominant"].value_counts()
+
             fig_donut, ax_donut = _fig(4.5, 4.5)
-            counts = df["y"].value_counts()
-            counts = counts.reindex(["no", "yes"])  # ordre fixé
-            colors = ["#1F4E79", "#27AE60"]
-            labels_pct = [f"{c/counts.sum()*100:.1f}%" for c in counts.values]
+            colors_etat = {
+                "Fluide": "#27AE60",
+                "Pré-saturé": "#F39C12",
+                "Saturé": "#E67E22",
+                "Bloqué": "#C00000",
+                "Inconnu": "#95A5A6",
+            }
+            colors = [colors_etat.get(e, "#2A5C4D") for e in etat_counts.index]
 
-            wedges, texts = ax_donut.pie(
-                counts.values,
-                colors=colors,
-                wedgeprops=dict(width=0.35, edgecolor="white", linewidth=2),
-                startangle=90, counterclock=False,
+            ax_donut.pie(
+                etat_counts.values, labels=etat_counts.index,
+                autopct='%1.1f%%', colors=colors,
+                wedgeprops=dict(width=0.4, edgecolor="white", linewidth=2),
+                textprops={"fontsize": 10},
+                startangle=90
             )
-
-            # Total au centre
-            ax_donut.text(0, 0.05, f"{counts.sum():,}",
-                           ha="center", va="center",
-                           fontsize=18, fontweight="bold", color="#1F4E79")
-            ax_donut.text(0, -0.18, "clients",
-                           ha="center", va="center",
-                           fontsize=10, color="#16324f")
-
-            # Légende propre à droite
-            legend_labels = [
-                f"Non-souscripteurs  ·  {labels_pct[0]}",
-                f"Souscripteurs  ·  {labels_pct[1]}",
-            ]
-            ax_donut.legend(wedges, legend_labels,
-                             loc="center left", bbox_to_anchor=(1.0, 0.5),
-                             frameon=False, fontsize=9)
-
-            ax_donut.set_title("Répartition de la cible",
-                                fontsize=12, pad=15, fontweight="bold")
+            ax_donut.set_title("État dominant", fontsize=11, pad=10,
+                                fontweight="bold")
             plt.tight_layout()
             st.pyplot(fig_donut, use_container_width=True)
             plt.close(fig_donut)
 
         st.markdown("---")
-        st.markdown("### 🏆 Récapitulatif des performances")
-        st.dataframe(modeling["comparison"].round(3), use_container_width=True)
-        st.success(
-            f"🏆 **{best_model_name}** retenu pour son meilleur compromis "
-            f"F1-score / ROC-AUC sur les classes déséquilibrées."
-        )
+
+        # Top 10 et bottom 10
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("### 🚗 Top 10 — Tronçons les plus chargés")
+            top10 = agg_troncons.nlargest(10, "debit_moyen")[
+                ["Libelle", "debit_moyen", "occupation_moyenne"]
+            ].reset_index(drop=True)
+            top10.columns = ["Tronçon", "Débit moy. (véh/h)",
+                              "Occupation (%)"]
+            top10.index = top10.index + 1
+            st.dataframe(top10.round(1), use_container_width=True, height=400)
+
+        with col2:
+            st.markdown("### 🌿 Bottom 10 — Tronçons les moins fréquentés")
+            bot10 = agg_troncons.nsmallest(10, "debit_moyen")[
+                ["Libelle", "debit_moyen", "occupation_moyenne"]
+            ].reset_index(drop=True)
+            bot10.columns = ["Tronçon", "Débit moy. (véh/h)",
+                              "Occupation (%)"]
+            bot10.index = bot10.index + 1
+            st.dataframe(bot10.round(1), use_container_width=True, height=400)
 
     # ──────────────────────────────────────────────────────────────────────
-    # TAB 1 : ANALYSE EXPLORATOIRE (EDA)
+    # TAB 1 : EXPLORATION
     # ──────────────────────────────────────────────────────────────────────
     with tabs[1]:
-        st.subheader("Analyse exploratoire des données")
+        st.subheader("Exploration des distributions")
 
-        # Filtres
-        with st.expander("🎛️ Filtres", expanded=False):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                age_range = st.slider("Tranche d'âge",
-                                      int(df["age"].min()), int(df["age"].max()),
-                                      (int(df["age"].min()), int(df["age"].max())))
-            with c2:
-                jobs_sel = st.multiselect("Profession(s)",
-                                          sorted(df["job"].unique()),
-                                          default=sorted(df["job"].unique()))
-            with c3:
-                marital_sel = st.multiselect("Statut marital",
-                                              sorted(df["marital"].unique()),
-                                              default=sorted(df["marital"].unique()))
-
-        df_f = df[
-            (df["age"].between(age_range[0], age_range[1])) &
-            (df["job"].isin(jobs_sel)) &
-            (df["marital"].isin(marital_sel))
-        ]
-
-        st.caption(f"📊 **{len(df_f):,}** clients filtrés "
-                   f"({len(df_f)/len(df)*100:.1f}% du total)")
-
-        # KPIs filtrés
+        # KPIs distributions
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.metric("Clients", f"{len(df_f):,}")
+            st.metric("Débit médian", f"{agg_troncons['debit_median'].median():.0f} véh/h")
         with c2:
-            taux_f = df_f["y_num"].mean()*100 if len(df_f) > 0 else 0
-            delta_f = taux_f - df["y_num"].mean()*100
-            st.metric("Taux conversion", f"{taux_f:.1f}%",
-                      delta=f"{delta_f:+.1f} pts vs moyenne")
+            st.metric("Débit max observé",
+                       f"{agg_troncons['debit_max'].max():.0f} véh/h")
         with c3:
-            st.metric("Solde moyen",
-                       f"{df_f['balance'].mean():,.0f} €" if len(df_f) > 0 else "—")
-
-        if len(df_f) == 0:
-            st.warning("Aucun client ne correspond aux filtres.")
-            st.stop()
+            st.metric("Occupation max",
+                       f"{agg_troncons['occupation_max'].max():.0f} %")
 
         st.markdown("---")
 
-        # Distributions numériques
-        st.markdown("### 📊 Distributions des variables clés")
-        c1, c2 = st.columns(2)
-        with c1:
-            fig_a, ax_a = _fig(6, 4)
-            for cat, color in [("yes", "#27AE60"), ("no", "#1F4E79")]:
-                ax_a.hist(df_f[df_f["y"] == cat]["age"], bins=30,
-                          alpha=0.6, label=cat, color=color)
-            ax_a.set_title("Distribution de l'âge", fontsize=12, pad=10)
-            ax_a.set_xlabel("Âge"); ax_a.set_ylabel("Effectif")
-            ax_a.legend(title="Souscription")
-            plt.tight_layout(); st.pyplot(fig_a, use_container_width=True); plt.close(fig_a)
+        # 📊 Histogrammes
+        st.markdown("### 📊 Distribution des indicateurs")
+        col1, col2 = st.columns(2)
 
-        with c2:
-            fig_b, ax_b = _fig(6, 4)
-            df_box = df_f[df_f["balance"].between(-2000, 20000)]  # filtre outliers extrêmes
-            sns.boxplot(data=df_box, x="y", y="balance",
-                         palette={"no": "#1F4E79", "yes": "#27AE60"}, ax=ax_b)
-            ax_b.set_title("Solde par souscription", fontsize=12, pad=10)
-            ax_b.set_xlabel("Souscription"); ax_b.set_ylabel("Solde (€)")
-            plt.tight_layout(); st.pyplot(fig_b, use_container_width=True); plt.close(fig_b)
+        with col1:
+            fig_h1, ax_h1 = _fig(7, 4.5)
+            ax_h1.hist(agg_troncons["debit_moyen"], bins=40,
+                        color="#2A5C4D", edgecolor="white", alpha=0.85)
+            moy = agg_troncons["debit_moyen"].mean()
+            med = agg_troncons["debit_moyen"].median()
+            ax_h1.axvline(moy, color="red", linestyle="--", linewidth=2,
+                           label=f"Moyenne ({moy:.0f})")
+            ax_h1.axvline(med, color="green", linestyle="--", linewidth=2,
+                           label=f"Médiane ({med:.0f})")
+            ax_h1.set_title("Distribution du débit moyen par tronçon",
+                             fontsize=11, fontweight="bold")
+            ax_h1.set_xlabel("Débit moyen (véh/h)")
+            ax_h1.set_ylabel("Nombre de tronçons")
+            ax_h1.legend()
+            plt.tight_layout()
+            st.pyplot(fig_h1, use_container_width=True)
+            plt.close(fig_h1)
 
-        # Taux de conversion par segment
-        st.markdown("### 🎯 Taux de conversion par segment")
+        with col2:
+            fig_h2, ax_h2 = _fig(7, 4.5)
+            ax_h2.hist(agg_troncons["occupation_moyenne"], bins=40,
+                        color="#27AE60", edgecolor="white", alpha=0.85)
+            moy_o = agg_troncons["occupation_moyenne"].mean()
+            ax_h2.axvline(moy_o, color="red", linestyle="--", linewidth=2,
+                           label=f"Moyenne ({moy_o:.1f}%)")
+            ax_h2.set_title("Distribution du taux d'occupation moyen",
+                             fontsize=11, fontweight="bold")
+            ax_h2.set_xlabel("Taux d'occupation (%)")
+            ax_h2.set_ylabel("Nombre de tronçons")
+            ax_h2.legend()
+            plt.tight_layout()
+            st.pyplot(fig_h2, use_container_width=True)
+            plt.close(fig_h2)
 
-        var_cat = st.selectbox(
-            "Variable à analyser",
-            ["job", "marital", "education", "month", "contact",
-             "poutcome", "age_group", "housing", "loan"]
+        st.markdown("---")
+
+        # 🚦 DIAGRAMME FONDAMENTAL — la pièce maîtresse
+        st.markdown("### 🚦 Diagramme fondamental du trafic")
+        st.markdown("""
+        Le **diagramme fondamental** est un outil classique de l'ingénierie du trafic.
+        Il croise **débit** et **taux d'occupation** pour révéler 3 régimes :
+
+        - 🟢 **Fluide** : débit ↗ avec l'occupation
+        - 🟡 **Capacité maximale** : pic de débit (15-25% d'occupation)
+        - 🔴 **Saturé** : au-delà, **le débit chute** alors que l'occupation continue → bouchons
+        """)
+
+        fig_diag, ax_diag = _fig(11, 6)
+        scatter = ax_diag.scatter(
+            sample_diag["Taux d'occupation"], sample_diag["Débit horaire"],
+            c=sample_diag["Débit horaire"], cmap="plasma",
+            alpha=0.4, s=8
         )
-
-        taux_seg = df_f.groupby(var_cat)["y_num"].agg(["mean", "count"]).reset_index()
-        taux_seg["mean"] = taux_seg["mean"] * 100
-        taux_seg = taux_seg.sort_values("mean", ascending=False)
-
-        fig_t, ax_t = _fig(10, 5)
-        moyenne_globale = df["y_num"].mean() * 100
-        colors_t = ["#27AE60" if x > moyenne_globale else "#E74C3C"
-                    for x in taux_seg["mean"]]
-        ax_t.bar(taux_seg[var_cat].astype(str), taux_seg["mean"],
-                 color=colors_t, edgecolor='black')
-        ax_t.axhline(y=moyenne_globale, color='blue', linestyle='--',
-                     label=f"Moyenne ({moyenne_globale:.1f}%)")
-        ax_t.set_title(f"Taux de souscription par '{var_cat}'", fontsize=12, pad=10)
-        ax_t.set_ylabel("Taux (%)")
-        ax_t.tick_params(axis='x', rotation=45)
-        ax_t.legend()
-        plt.tight_layout(); st.pyplot(fig_t, use_container_width=True); plt.close(fig_t)
-
-        with st.expander("📋 Tableau détaillé"):
-            taux_display = taux_seg.copy()
-            taux_display.columns = [var_cat, "Taux conv. (%)", "Effectif"]
-            taux_display["Taux conv. (%)"] = taux_display["Taux conv. (%)"].round(2)
-            st.dataframe(taux_display, use_container_width=True, hide_index=True)
-
-        # Matrice de corrélation
-        st.markdown("### 🔗 Matrice de corrélation")
-        num_vars = ["age", "balance", "day", "campaign", "pdays",
-                    "previous", "y_num"]
-        corr = df_f[num_vars].corr()
-        fig_c, ax_c = _fig(8, 6)
-        sns.heatmap(corr, annot=True, cmap="RdBu_r", center=0,
-                    vmin=-1, vmax=1, fmt=".2f", ax=ax_c)
-        ax_c.set_title("Matrice de corrélation", fontsize=12, pad=10)
-        plt.tight_layout(); st.pyplot(fig_c, use_container_width=True); plt.close(fig_c)
-
-    # ──────────────────────────────────────────────────────────────────────
-    # TAB 2 : SEGMENTATION
-    # ──────────────────────────────────────────────────────────────────────
-    with tabs[2]:
-        st.subheader("Segmentation des clients (K-Means)")
-
-        cp = segmentation["cluster_profile"]
-
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.metric("🎯 Clusters", segmentation["n_clusters"])
-        with c2:
-            st.metric("📊 Variables", "5")
-        with c3:
-            best_clu = cp.loc[cp["taux_souscription"].idxmax(), "Cluster"]
-            best_taux = cp["taux_souscription"].max()
-            st.metric(f"🏆 Cluster #{best_clu}",
-                       f"{best_taux:.1f}% conv.")
-        with c4:
-            st.metric("📈 Inertie ratio",
-                       f"{cp['nb_clients'].max()/cp['nb_clients'].min():.1f}")
-
-        st.markdown("---")
-
-        c1, c2 = st.columns(2)
-        with c1:
-            # PCA scatter
-            fig_pca, ax_pca = _fig(7, 6)
-            sample_seg = segmentation["seg_df"].sample(min(3000, len(segmentation["seg_df"])),
-                                                        random_state=42)
-            colors_pca = ["#1F4E79", "#E67E22", "#27AE60", "#9B59B6", "#E74C3C"]
-            for i in range(segmentation["n_clusters"]):
-                mask = sample_seg["Cluster"] == i
-                ax_pca.scatter(sample_seg[mask]["PCA1"], sample_seg[mask]["PCA2"],
-                                c=colors_pca[i % len(colors_pca)],
-                                label=f"Cluster {i}", alpha=0.5, s=20)
-            ax_pca.set_title("Visualisation 2D (ACP) des clusters", fontsize=12, pad=10)
-            ax_pca.set_xlabel("Composante 1"); ax_pca.set_ylabel("Composante 2")
-            ax_pca.legend(title="Cluster", bbox_to_anchor=(1.02, 1),
-                           loc="upper left", borderaxespad=0)
-            plt.tight_layout(); st.pyplot(fig_pca, use_container_width=True); plt.close(fig_pca)
-
-        with c2:
-            # Bar age vs balance par cluster
-            fig_bar, ax_bar = _fig(7, 6)
-            x = np.arange(len(cp)); w = 0.35
-            ax_bar.bar(x - w/2, cp["balance_moyen"], w,
-                       label="Solde moy. (€)", color="#1F4E79", alpha=0.85)
-            ax2b = ax_bar.twinx()
-            ax2b.bar(x + w/2, cp["age_moyen"], w,
-                     label="Âge moy.", color="#9ecae1", alpha=0.85)
-            ax_bar.set_title("Solde & Âge par cluster", fontsize=12, pad=10)
-            ax_bar.set_xlabel("Cluster")
-            ax_bar.set_ylabel("Solde moy. (€)", color="#1F4E79")
-            ax2b.set_ylabel("Âge moy.", color="#4A90E2")
-            ax_bar.set_xticks(x)
-            ax_bar.set_xticklabels([f"C{int(c)}" for c in cp["Cluster"]])
-            l1, lb1 = ax_bar.get_legend_handles_labels()
-            l2, lb2 = ax2b.get_legend_handles_labels()
-            ax_bar.legend(l1+l2, lb1+lb2, loc="upper left", fontsize=9)
-            plt.tight_layout(); st.pyplot(fig_bar, use_container_width=True); plt.close(fig_bar)
-
-        st.markdown("### 📋 Profils des clusters")
-        st.dataframe(cp.round(2), use_container_width=True, hide_index=True)
-
-        st.markdown("#### Lecture métier")
-        for _, row in cp.round(2).iterrows():
-            st.markdown(
-                f"**Cluster {int(row['Cluster'])} — {row['Segment métier']}** : "
-                f"{int(row['nb_clients']):,} clients · âge moy. {row['age_moyen']:.0f} ans · "
-                f"solde moy. {row['balance_moyen']:.0f} € · "
-                f"taux souscription **{row['taux_souscription']:.1f}%**"
-            )
-
-    # ──────────────────────────────────────────────────────────────────────
-    # TAB 3 : MODÉLISATION
-    # ──────────────────────────────────────────────────────────────────────
-    with tabs[3]:
-        st.subheader("Modélisation prédictive de la souscription")
-        st.dataframe(modeling["comparison"].round(3), use_container_width=True)
-
-        model_choice = st.selectbox("Modèle à visualiser",
-                                     list(modeling["results"].keys()),
-                                     index=3)
-        sel = modeling["results"][model_choice]
-
-        ca, cb = st.columns(2)
-        with ca:
-            fig_cm, ax_cm = _fig(6, 5)
-            sns.heatmap(sel["cm"], annot=True, fmt="d", cbar=False, cmap="Blues",
-                        ax=ax_cm,
-                        xticklabels=["Non-souscripteur", "Souscripteur"],
-                        yticklabels=["Non-souscripteur", "Souscripteur"],
-                        annot_kws={"size": 14})
-            ax_cm.set_title(f"Matrice de confusion — {model_choice}",
-                             fontsize=12, pad=10)
-            ax_cm.set_xlabel("Prédit"); ax_cm.set_ylabel("Réel")
-            plt.tight_layout(); st.pyplot(fig_cm, use_container_width=True); plt.close(fig_cm)
-
-        with cb:
-            try:
-                imp = feat_importance(sel["pipeline"]).head(15)
-                fig_imp, ax_imp = _fig(7, 6)
-                sns.barplot(data=imp, x="Importance", y="Variable", ax=ax_imp,
-                             palette="Blues_r")
-                ax_imp.set_title(f"Top 15 variables — {model_choice}",
-                                  fontsize=12, pad=10)
-                ax_imp.set_xlabel("Importance"); ax_imp.set_ylabel("")
-                plt.tight_layout(); st.pyplot(fig_imp, use_container_width=True); plt.close(fig_imp)
-            except Exception as e:
-                st.info("Importance des variables non disponible pour ce modèle.")
-
-        st.markdown("### Courbes ROC — Comparaison des modèles")
-        fig_roc, ax_roc = _fig(10, 5)
-        for (name, res), color in zip(
-            modeling["results"].items(),
-            ["#1F4E79", "#2E7D32", "#e67e22", "#8e44ad"]
-        ):
-            fpr, tpr, _ = res["roc_curve"]
-            ax_roc.plot(fpr, tpr,
-                         label=f"{name} (AUC={res['roc_auc']:.3f})",
-                         color=color, linewidth=2)
-        ax_roc.plot([0, 1], [0, 1], 'k--', linewidth=1, alpha=0.5)
-        ax_roc.set_xlabel("Taux de faux positifs", fontsize=11)
-        ax_roc.set_ylabel("Taux de vrais positifs", fontsize=11)
-        ax_roc.set_title("Courbes ROC — Comparaison des modèles",
-                          fontsize=13, pad=10)
-        ax_roc.legend(fontsize=10); ax_roc.grid(True, alpha=0.3)
-        plt.tight_layout(); st.pyplot(fig_roc, use_container_width=True); plt.close(fig_roc)
-
-    # ──────────────────────────────────────────────────────────────────────
-    # TAB 4 : DÉCISION MARKETING
-    # ──────────────────────────────────────────────────────────────────────
-    with tabs[4]:
-        st.subheader("Optimisation de la décision marketing")
-
-        # Seuils testés
-        thr_r = np.round(np.arange(0.00, 0.96, 0.01), 2)
-        rows = [compute_strategy(y_test, y_proba_best, t, COST, GAIN) for t in thr_r]
-        thr_df = pd.DataFrame(rows)
-
-        # Meilleurs seuils
-        best_profit_thr = float(thr_df.loc[thr_df["Profit estimé (€)"].idxmax(), "Seuil"])
-        best_roi_thr = float(thr_df.loc[thr_df["ROI (%)"].idxmax(), "Seuil"])
-
-        # Stratégies clés
-        s_all = compute_strategy(y_test, y_proba_best, 0.00, COST, GAIN)
-        s_std = compute_strategy(y_test, y_proba_best, 0.50, COST, GAIN)
-        s_opt_profit = compute_strategy(y_test, y_proba_best, best_profit_thr, COST, GAIN)
-        s_opt_roi = compute_strategy(y_test, y_proba_best, best_roi_thr, COST, GAIN)
-
-        strat_df = pd.DataFrame([
-            {"Stratégie": "Tous les clients", **s_all},
-            {"Stratégie": "Seuil standard 0.50", **s_std},
-            {"Stratégie": "Seuil optimisé profit", **s_opt_profit},
-            {"Stratégie": "Seuil optimisé ROI", **s_opt_roi},
-        ])
-
-        strat_df = strat_df[[
-            "Stratégie", "Seuil", "Clients contactés", "Répondeurs captés",
-            "Faux positifs", "Faux négatifs", "Taux de conversion (%)",
-            "Taux de capture (%)", "Coût total (€)", "Profit estimé (€)", "ROI (%)"
-        ]]
-
-        st.dataframe(strat_df, use_container_width=True, hide_index=True)
+        plt.colorbar(scatter, ax=ax_diag, label="Débit (véh/h)")
+        ax_diag.set_title(
+            "Diagramme fondamental du trafic\n(Débit vs Taux d'occupation)",
+            fontsize=12, fontweight="bold", pad=15
+        )
+        ax_diag.set_xlabel("Taux d'occupation (%)")
+        ax_diag.set_ylabel("Débit horaire (véh/h)")
+        plt.tight_layout()
+        st.pyplot(fig_diag, use_container_width=True)
+        plt.close(fig_diag)
 
         st.info(
-            f"**Recommandation profit :** cibler les clients avec une probabilité ≥ "
-            f"**{best_profit_thr:.2f}** "
-            f"→ profit estimé **{s_opt_profit['Profit estimé (€)']:,.0f} €** · "
-            f"ROI **{s_opt_profit['ROI (%)']:.2f}%** · "
-            f"capture **{s_opt_profit['Taux de capture (%)']:.2f}%** des répondeurs."
+            "💡 **Lecture métier :** un même débit peut correspondre à un trafic "
+            "*fluide* (faible occupation) ou *saturé* (forte occupation). "
+            "Le **taux d'occupation** est l'indicateur clé pour distinguer "
+            "ces deux situations radicalement différentes pour l'usager."
         )
 
-        # Courbes
-        p_vals = thr_df["Profit estimé (€)"].tolist()
-        r_vals = thr_df["ROI (%)"].tolist()
-        n_vals = thr_df["Clients contactés"].tolist()
+    # ──────────────────────────────────────────────────────────────────────
+    # TAB 2 : TENDANCES TEMPORELLES
+    # ──────────────────────────────────────────────────────────────────────
+    with tabs[2]:
+        st.subheader("Analyse des tendances temporelles")
 
-        fig_th, axs = plt.subplots(1, 3, figsize=(16, 5))
+        # Profil 24h global (depuis agg_temporel)
+        profil_24h = (
+            agg_temporel.groupby("heure")
+                        .agg(debit_moyen=("debit_moyen", "mean"),
+                             occupation_moyenne=("occupation_moyenne", "mean"))
+                        .reset_index()
+        )
 
-        # Profit
-        axs[0].plot(thr_r, p_vals, color="#6f4b8b", linewidth=2)
-        axs[0].axvline(best_profit_thr, color="red", linestyle="--",
-                        label=f"Seuil profit max = {best_profit_thr:.2f}")
-        axs[0].axhline(0, color="gray", linestyle=":", alpha=0.6)
-        axs[0].set_title("Profit net estimé", fontsize=12, pad=10)
-        axs[0].set_xlabel("Seuil de décision")
-        axs[0].set_ylabel("Profit (€)")
-        axs[0].legend(fontsize=9)
-        axs[0].grid(alpha=0.25)
+        heure_pic = profil_24h.loc[profil_24h["debit_moyen"].idxmax(), "heure"]
+        heure_calme = profil_24h.loc[profil_24h["debit_moyen"].idxmin(), "heure"]
 
-        # ROI
-        axs[1].plot(thr_r, r_vals, color="#d946af", linewidth=2)
-        axs[1].axvline(best_roi_thr, color="red", linestyle="--",
-                        label=f"Seuil ROI max = {best_roi_thr:.2f}")
-        axs[1].axhline(0, color="gray", linestyle=":", alpha=0.6)
-        axs[1].set_title("ROI (%) par seuil", fontsize=12, pad=10)
-        axs[1].set_xlabel("Seuil de décision")
-        axs[1].set_ylabel("ROI (%)")
-        axs[1].legend(fontsize=9)
-        axs[1].grid(alpha=0.25)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("🚦 Heure de pointe", f"{int(heure_pic)}h")
+        with c2:
+            st.metric("🌙 Heure la plus calme", f"{int(heure_calme)}h")
+        with c3:
+            st.metric("📊 Amplitude jour/nuit",
+                       f"×{profil_24h['debit_moyen'].max() / max(profil_24h['debit_moyen'].min(), 1):.1f}")
 
-        # Volume contacté
-        axs[2].plot(thr_r, n_vals, color="#4b8b4b", linewidth=2)
-        axs[2].axvline(best_profit_thr, color="red", linestyle="--",
-                        label="Seuil profit max")
-        axs[2].axvline(best_roi_thr, color="orange", linestyle="--",
-                        label="Seuil ROI max")
-        axs[2].set_title("Volume de clients contactés", fontsize=12, pad=10)
-        axs[2].set_xlabel("Seuil de décision")
-        axs[2].set_ylabel("Nombre de clients")
-        axs[2].legend(fontsize=9)
-        axs[2].grid(alpha=0.25)
+        st.markdown("---")
 
-        plt.suptitle("Optimisation de la stratégie de ciblage",
-                      fontsize=14, fontweight="bold", y=1.02)
+        # 📈 Profil 24h
+        st.markdown("### 📈 Profil de trafic sur 24 heures")
+
+        fig_24h, ax1 = _fig(12, 5)
+
+        color1 = "#2A5C4D"
+        ax1.plot(profil_24h["heure"], profil_24h["debit_moyen"],
+                 color=color1, linewidth=2.5, marker="o",
+                 label="Débit horaire")
+        ax1.fill_between(profil_24h["heure"], profil_24h["debit_moyen"],
+                          alpha=0.3, color=color1)
+        ax1.set_xlabel("Heure de la journée")
+        ax1.set_ylabel("Débit moyen (véh/h)", color=color1)
+        ax1.tick_params(axis="y", labelcolor=color1)
+        ax1.set_xticks(range(24))
+
+        ax2 = ax1.twinx()
+        color2 = "#B33A3A"
+        ax2.plot(profil_24h["heure"], profil_24h["occupation_moyenne"],
+                 color=color2, linewidth=2.5, marker="s", linestyle="--",
+                 label="Taux d'occupation")
+        ax2.set_ylabel("Taux d'occupation moyen (%)", color=color2)
+        ax2.tick_params(axis="y", labelcolor=color2)
+
+        plt.title("Évolution du trafic au cours de la journée",
+                   fontsize=12, fontweight="bold")
         plt.tight_layout()
-        st.pyplot(fig_th, use_container_width=True)
-        plt.close(fig_th)
+        st.pyplot(fig_24h, use_container_width=True)
+        plt.close(fig_24h)
 
-        st.markdown("#### Top 10 seuils selon le profit")
-        st.dataframe(
-            thr_df.sort_values("Profit estimé (€)", ascending=False).head(10),
-            use_container_width=True, hide_index=True
+        st.markdown("---")
+
+        # 📅 Semaine vs week-end
+        st.markdown("### 📅 Comparaison semaine vs week-end")
+
+        profil_we = (
+            agg_temporel.groupby(["heure", "est_weekend"])
+                        .agg(debit_moyen=("debit_moyen", "mean"))
+                        .reset_index()
+        )
+        profil_we_pivot = profil_we.pivot(
+            index="heure", columns="est_weekend", values="debit_moyen"
+        )
+        profil_we_pivot.columns = ["Semaine", "Week-end"]
+
+        fig_we, ax_we = _fig(12, 5)
+        profil_we_pivot.plot(ax=ax_we, linewidth=2.5, marker="o",
+                              color=["#2A5C4D", "#D4A82A"])
+        ax_we.set_title("Débit horaire moyen — Semaine vs Week-end",
+                         fontsize=12, fontweight="bold")
+        ax_we.set_xlabel("Heure")
+        ax_we.set_ylabel("Débit moyen (véh/h)")
+        ax_we.set_xticks(range(24))
+        ax_we.legend(title="Type de jour")
+        plt.tight_layout()
+        st.pyplot(fig_we, use_container_width=True)
+        plt.close(fig_we)
+
+        st.markdown("---")
+
+        # 🔥 HEATMAP — la pièce visuelle phare
+        st.markdown("### 🔥 Heatmap : congestion par heure × jour de la semaine")
+
+        labels_jours = ["Lundi", "Mardi", "Mercredi", "Jeudi",
+                         "Vendredi", "Samedi", "Dimanche"]
+
+        heatmap_data = (
+            agg_temporel.groupby(["heure", "num_jour_sem"])
+                        .agg(debit_moyen=("debit_moyen", "mean"))
+                        .reset_index()
+                        .pivot(index="heure", columns="num_jour_sem",
+                                values="debit_moyen")
+        )
+        heatmap_data.columns = labels_jours
+
+        fig_hm, ax_hm = _fig(11, 8)
+        sns.heatmap(heatmap_data, cmap="YlOrRd", annot=True, fmt=".0f",
+                     cbar_kws={"label": "Débit moyen (véh/h)"},
+                     ax=ax_hm, linewidths=0.3, linecolor="white")
+        ax_hm.set_title("Heatmap du débit horaire — Heure × Jour de la semaine",
+                          fontsize=12, fontweight="bold", pad=15)
+        ax_hm.set_xlabel("Jour de la semaine")
+        ax_hm.set_ylabel("Heure de la journée")
+        plt.tight_layout()
+        st.pyplot(fig_hm, use_container_width=True)
+        plt.close(fig_hm)
+
+        st.info(
+            "💡 **Insights :** zone la plus chaude entre **17h-19h en semaine** "
+            "(pointe domicile-travail). Pic secondaire à **8h-9h**. "
+            "Pattern week-end décalé vers **14h-18h** (loisirs)."
         )
 
     # ──────────────────────────────────────────────────────────────────────
-    # TAB 5 : PRÉDICTION CLIENT
+    # TAB 3 : CARTOGRAPHIE
     # ──────────────────────────────────────────────────────────────────────
-    with tabs[5]:
-        st.subheader("Prédiction pour un client")
-        st.caption(f"Modèle utilisé : **{best_model_name}**")
+    with tabs[3]:
+        st.subheader("Cartographie interactive du trafic parisien")
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("**👤 Profil sociodémographique**")
-            in_age = st.slider("Âge", 18, 95, 35)
-            in_job = st.selectbox("Profession", sorted(df["job"].unique()))
-            in_marital = st.selectbox("Statut marital",
-                                       sorted(df["marital"].unique()))
-            in_education = st.selectbox("Éducation",
-                                         sorted(df["education"].unique()))
-        with c2:
-            st.markdown("**💰 Profil bancaire**")
-            in_balance = st.number_input("Solde (€)", -10000, 100000, 1500, step=100)
-            in_default = st.radio("Crédit en défaut ?", ["no", "yes"], horizontal=True)
-            in_housing = st.radio("Prêt immobilier ?", ["no", "yes"], horizontal=True)
-            in_loan = st.radio("Prêt personnel ?", ["no", "yes"], horizontal=True)
-        with c3:
-            st.markdown("**📞 Campagne**")
-            in_contact = st.selectbox("Type de contact",
-                                       sorted(df["contact"].unique()))
-            in_month = st.selectbox("Mois", sorted(df["month"].unique()))
-            in_day = st.slider("Jour", 1, 31, 15)
-            in_campaign = st.number_input("Nb contacts campagne", 1, 50, 2)
+        st.markdown("""
+        Visualisation des **2 985 tronçons surveillés** sur la carte de Paris.
+        Cliquez sur un point pour voir le détail.
+        """)
 
-        st.markdown("**📜 Historique**")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            in_pdays = st.number_input("Jours depuis dernier contact",
-                                        -1, 1000, -1)
-        with c2:
-            in_previous = st.number_input("Nb contacts précédents", 0, 50, 0)
-        with c3:
-            in_poutcome = st.selectbox("Résultat campagne précédente",
-                                        sorted(df["poutcome"].unique()))
+        # Filtres
+        col1, col2 = st.columns(2)
+        with col1:
+            niveau_filtre = st.radio(
+                "Filtre par niveau de trafic :",
+                ["Tous", "Fort", "Moyen", "Faible"],
+                horizontal=True
+            )
+        with col2:
+            type_carte = st.radio(
+                "Type de visualisation :",
+                ["📍 Marqueurs", "🔥 Heatmap"],
+                horizontal=True
+            )
 
-        if st.button("🚀 Lancer la prédiction"):
-            client_input = pd.DataFrame([{
-                "age": in_age, "balance": in_balance, "day": in_day,
-                "campaign": in_campaign, "pdays": in_pdays,
-                "previous": in_previous,
-                "contacted_before": 1 if in_pdays != -1 else 0,
-                "job": in_job, "marital": in_marital,
-                "education": in_education, "default": in_default,
-                "housing": in_housing, "loan": in_loan,
-                "contact": in_contact, "month": in_month,
-                "poutcome": in_poutcome,
-            }])
+        # Filtrer les données
+        geo_df = agg_troncons.dropna(subset=["lat", "lon"]).copy()
+        q33 = geo_df["debit_moyen"].quantile(0.33)
+        q66 = geo_df["debit_moyen"].quantile(0.66)
 
-            best_pipe = modeling["results"][best_model_name]["pipeline"]
-            proba = best_pipe.predict_proba(client_input)[0, 1]
-            pred = int(proba >= 0.5)
+        if niveau_filtre == "Fort":
+            geo_df = geo_df[geo_df["debit_moyen"] >= q66]
+        elif niveau_filtre == "Moyen":
+            geo_df = geo_df[(geo_df["debit_moyen"] >= q33) &
+                            (geo_df["debit_moyen"] < q66)]
+        elif niveau_filtre == "Faible":
+            geo_df = geo_df[geo_df["debit_moyen"] < q33]
 
-            c1, c2 = st.columns([1, 2])
+        st.caption(f"📍 **{len(geo_df):,}** tronçons affichés")
+
+        # Carte
+        m = folium.Map(location=[48.8566, 2.3522], zoom_start=12,
+                       tiles="cartodbpositron")
+
+        if type_carte == "📍 Marqueurs":
+
+            def get_color(debit):
+                if debit < q33: return "#27AE60"
+                elif debit < q66: return "#F39C12"
+                else: return "#C00000"
+
+            def get_radius(debit):
+                max_d = geo_df["debit_moyen"].max()
+                return 3 + (debit / max_d * 8) if max_d > 0 else 3
+
+            # Limiter le nombre de marqueurs pour performance
+            display_df = geo_df.sample(min(500, len(geo_df)), random_state=42)
+
+            for _, row in display_df.iterrows():
+                libelle = str(row["Libelle"])[:60]
+                debit = row["debit_moyen"]
+                occup = row["occupation_moyenne"]
+                etat = row["etat_dominant"]
+                popup_html = (
+                    f"<b>{libelle}</b><br>"
+                    f"🚗 Débit moyen : {debit:.0f} véh/h<br>"
+                    f"⏱️ Occupation : {occup:.1f} %<br>"
+                    f"🚦 État dominant : {etat}"
+                )
+
+                folium.CircleMarker(
+                    location=[row["lat"], row["lon"]],
+                    radius=get_radius(debit),
+                    popup=folium.Popup(popup_html, max_width=300),
+                    color=get_color(debit),
+                    fillColor=get_color(debit),
+                    fillOpacity=0.7,
+                    weight=2,
+                ).add_to(m)
+
+        else:  # Heatmap
+            heat_data = [[row["lat"], row["lon"], row["debit_moyen"]]
+                         for _, row in geo_df.iterrows()]
+            HeatMap(
+                heat_data, radius=15, blur=20, max_zoom=13,
+                gradient={0.2: "#27AE60", 0.5: "#F39C12", 0.8: "#C00000"}
+            ).add_to(m)
+
+        # Afficher la carte
+        st_folium(m, width=None, height=600,
+                   returned_objects=[],
+                   key=f"map_{niveau_filtre}_{type_carte}")
+
+        # Légende sous la carte
+        st.markdown("""
+        **🚦 Légende :**
+        🟢 Faible (< 33%) ·
+        🟠 Moyen (33-66%) ·
+        🔴 Élevé (> 66%) du débit moyen
+        """)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # TAB 4 : TRONÇONS (drill-down par rue)
+    # ──────────────────────────────────────────────────────────────────────
+    with tabs[4]:
+        st.subheader("Analyse détaillée par tronçon")
+
+        # Sélecteur de tronçon avec recherche
+        st.markdown("### 🔍 Sélectionnez un tronçon")
+
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            recherche = st.text_input(
+                "Rechercher un tronçon (par nom de rue / avenue) :",
+                value="Champs"
+            )
+
+        # Filtrer les tronçons
+        if recherche:
+            options = agg_troncons[
+                agg_troncons["Libelle"].str.contains(recherche, case=False,
+                                                      na=False)
+            ].sort_values("debit_moyen", ascending=False)
+        else:
+            options = agg_troncons.sort_values("debit_moyen", ascending=False)
+
+        if len(options) == 0:
+            st.warning("Aucun tronçon trouvé pour cette recherche.")
+            st.stop()
+
+        with col2:
+            st.metric("Résultats", len(options))
+
+        # Choix du tronçon
+        if len(options) > 0:
+            options_dict = dict(zip(
+                options["Identifiant arc"],
+                options["Libelle"] + " (Identifiant : " +
+                options["Identifiant arc"].astype(str) + ")"
+            ))
+            selected_arc = st.selectbox(
+                "Tronçon à analyser :",
+                options=list(options_dict.keys()),
+                format_func=lambda x: options_dict[x]
+            )
+
+            # Récupérer les infos du tronçon
+            info = agg_troncons[
+                agg_troncons["Identifiant arc"] == selected_arc
+            ].iloc[0]
+
+            st.markdown("---")
+            st.markdown(f"### 📍 {info['Libelle']}")
+
+            # KPIs du tronçon
+            c1, c2, c3, c4 = st.columns(4)
             with c1:
-                if pred == 1:
-                    st.markdown(
-                        f'<div class="result-box result-target">'
-                        f'<b>✅ CLIENT À CIBLER</b><br>'
-                        f'Probabilité de souscription :<br>'
-                        f'<span class="prob-value">{proba*100:.1f}%</span>'
-                        f'</div>', unsafe_allow_html=True
-                    )
-                else:
-                    st.markdown(
-                        f'<div class="result-box result-notarget">'
-                        f'<b>❌ Client peu prometteur</b><br>'
-                        f'Probabilité de souscription :<br>'
-                        f'<span class="prob-value">{proba*100:.1f}%</span>'
-                        f'</div>', unsafe_allow_html=True
-                    )
-
+                st.metric("🚗 Débit moyen",
+                           f"{info['debit_moyen']:.0f} véh/h")
             with c2:
-                fig_g, ax_g = _fig(8, 4)
-                ax_g.barh(["Probabilité"], [proba*100],
-                          color="#27AE60" if pred == 1 else "#E74C3C")
-                ax_g.barh(["Probabilité"], [100 - proba*100],
-                          left=[proba*100], color="#dce8f5")
-                ax_g.axvline(50, color="black", linestyle="--", alpha=0.5,
-                              label="Seuil 50%")
-                ax_g.set_xlim(0, 100)
-                ax_g.set_xlabel("Probabilité (%)")
-                ax_g.set_title("Score de propension", fontsize=12, pad=10)
-                ax_g.legend()
-                plt.tight_layout()
-                st.pyplot(fig_g, use_container_width=True)
-                plt.close(fig_g)
+                st.metric("🚀 Débit max",
+                           f"{info['debit_max']:.0f} véh/h")
+            with c3:
+                st.metric("⏱️ Occupation moy.",
+                           f"{info['occupation_moyenne']:.1f} %")
+            with c4:
+                st.metric("🚦 État dominant", info["etat_dominant"])
+
+            st.markdown("---")
+
+            # Profil 24h × jour de la semaine pour ce tronçon
+            arc_data = agg_horaire[
+                agg_horaire["Identifiant arc"] == selected_arc
+            ].copy()
+
+            if len(arc_data) > 0:
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown("#### 📈 Profil de trafic sur 24h")
+                    profil_arc = arc_data.groupby("heure")["debit_moyen"].mean()
+
+                    fig_arc, ax_arc = _fig(7, 4.5)
+                    ax_arc.plot(profil_arc.index, profil_arc.values,
+                                 color="#2A5C4D", linewidth=2.5, marker="o")
+                    ax_arc.fill_between(profil_arc.index, profil_arc.values,
+                                          alpha=0.3, color="#2A5C4D")
+                    ax_arc.set_title(f"Débit horaire moyen",
+                                       fontsize=11, fontweight="bold")
+                    ax_arc.set_xlabel("Heure")
+                    ax_arc.set_ylabel("Débit (véh/h)")
+                    ax_arc.set_xticks(range(0, 24, 2))
+                    plt.tight_layout()
+                    st.pyplot(fig_arc, use_container_width=True)
+                    plt.close(fig_arc)
+
+                with col2:
+                    st.markdown("#### 🔥 Heatmap horaire × jour")
+                    labels_jours = ["Lun", "Mar", "Mer", "Jeu",
+                                     "Ven", "Sam", "Dim"]
+
+                    heatmap_arc = arc_data.pivot_table(
+                        values="debit_moyen", index="heure",
+                        columns="num_jour_sem"
+                    )
+                    if heatmap_arc.shape[1] == 7:
+                        heatmap_arc.columns = labels_jours
+
+                    fig_arc_hm, ax_arc_hm = _fig(7, 4.5)
+                    sns.heatmap(heatmap_arc, cmap="YlOrRd", ax=ax_arc_hm,
+                                 cbar_kws={"label": "véh/h"})
+                    ax_arc_hm.set_title("Trafic par heure × jour",
+                                          fontsize=11, fontweight="bold")
+                    ax_arc_hm.set_xlabel("")
+                    ax_arc_hm.set_ylabel("Heure")
+                    plt.tight_layout()
+                    st.pyplot(fig_arc_hm, use_container_width=True)
+                    plt.close(fig_arc_hm)
+
+                # Mini-carte du tronçon
+                if not pd.isna(info["lat"]) and not pd.isna(info["lon"]):
+                    st.markdown("#### 🗺️ Localisation")
+                    m_arc = folium.Map(
+                        location=[info["lat"], info["lon"]],
+                        zoom_start=15, tiles="cartodbpositron"
+                    )
+                    folium.CircleMarker(
+                        location=[info["lat"], info["lon"]],
+                        radius=10,
+                        popup=info["Libelle"],
+                        color="#C00000", fillColor="#C00000",
+                        fillOpacity=0.8, weight=3
+                    ).add_to(m_arc)
+                    st_folium(m_arc, width=None, height=400,
+                              returned_objects=[],
+                              key=f"map_arc_{selected_arc}")
 
 
 if __name__ == "__main__":
